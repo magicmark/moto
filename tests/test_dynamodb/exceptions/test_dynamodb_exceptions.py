@@ -537,6 +537,47 @@ def test_transact_write_items__too_many_transactions():
 
 
 @mock_dynamodb
+def test_transact_write_items__returns_item_for_all_old():
+    table_schema = {
+        "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}],
+        "AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}],
+    }
+    dynamodb = boto3.client("dynamodb", region_name="us-east-1")
+    table = dynamodb.create_table(
+        TableName="test-table", BillingMode="PAY_PER_REQUEST", **table_schema
+    )
+
+    table.put_item(Item={
+        "pk": "foo@bar.com",
+        "favorite_color": "blue",
+        "is_banned": True,
+    })
+
+    with pytest.raises(ClientError) as exc:
+        dynamodb.transact_write_items(
+            TransactItems=[{
+                "Update": {
+                    "TableName": "test-table",
+                    "Key": {"pk": "foo@bar.com"},
+                    "UpdateExpression": "set #color = :color",
+                    "ExpressionAttributeNames": {
+                        "#color": "favorite_color",
+                        "#banned": "is_banned",
+                    },
+                    "ExpressionAttributeValues": {":color": "red"},
+                    "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
+                    "ConditionExpression": "attribute_not_exists(#banned)",
+                }
+            }]
+        )
+
+    err = exc.value.response["Error"]
+    err["Code"].should.equal("ValidationException")
+    err["Message"].should.match("Member must have length less than or equal to 25")
+    assert 'Item' in err.response["CancellationReasons"][0] # todo: make this a similar assertion to the above, idk what the RHS would be yet tho
+
+
+@mock_dynamodb
 def test_update_item_non_existent_table():
     client = boto3.client("dynamodb", region_name="us-west-2")
     with pytest.raises(client.exceptions.ResourceNotFoundException) as exc:
